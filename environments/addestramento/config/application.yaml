@@ -1,7 +1,7 @@
 # Configurazione applicativa specifica dell'ambiente addestramento.
 # Viene passata come extra_vars al job template AWX in fase di deploy.
 server:
-  replicas: 2
+  replicas: 3
 logging:
   level: INFO
 datasource:
