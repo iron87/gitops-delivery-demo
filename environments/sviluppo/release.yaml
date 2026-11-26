@@ -6,8 +6,8 @@ environment: sviluppo
 application: orders-service
 artifact:
   name: orders-service
-  version: 1.1.0
+  version: 1.2.0
   repository: https://nexus.example.local/repository/releases/it/example/orders-service
-change_request: CR-1001
+change_request: CR-1002
 requested_by: dev.rossi
-requested_at: "2026-11-26T16:35:15Z"
+requested_at: "2026-11-26T16:36:20Z"
