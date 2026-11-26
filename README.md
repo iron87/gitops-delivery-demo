@@ -109,6 +109,39 @@ scripts/gitops.sh status
 
 Stato finale atteso: sviluppo `1.2.1`, addestramento `1.1.0`, produzione `1.1.0`.
 
+## Simulare gli scenari da soli
+
+Prerequisiti: `gh` autenticato con accesso al repo, `jq`. Clonare e posizionarsi nel repo:
+
+```bash
+gh repo clone iron87/gitops-delivery-demo && cd gitops-delivery-demo
+```
+
+Ogni `promote` stampa il numero della PR, ogni `approve-pr` lo sha del merge: passali ai comandi
+successivi. Usa CR e versioni nuove (la policy rifiuta una versione uguale a quella già prevista).
+
+```bash
+scripts/gitops.sh status                                                     # stato di partenza
+PR=$(scripts/gitops.sh promote sviluppo 1.3.0 CR-2001 orders-service dev.rossi)
+SHA=$(scripts/gitops.sh approve-pr $PR)
+scripts/gitops.sh wait-deploy $SHA                                           # sviluppo: niente gate
+
+PR=$(scripts/gitops.sh promote addestramento 1.3.0 CR-2002 orders-service ref.bianchi)
+scripts/gitops.sh config $PR application.yaml '.logging.level = DEBUG'      # step 4 opzionale
+SHA=$(scripts/gitops.sh approve-pr $PR)
+scripts/gitops.sh approve-deploy addestramento "CAB ok"                      # gate di ambiente
+scripts/gitops.sh wait-deploy $SHA
+
+scripts/gitops.sh promote produzione 1.4.0 CR-2003                           # rifiutata dalla policy
+
+PR=$(scripts/gitops.sh promote produzione 1.3.0 CR-2004 orders-service ref.bianchi)
+scripts/gitops.sh reject-pr $PR "CAB rinviato"                               # PR rifiutata
+```
+
+Il deploy si può approvare/rifiutare anche dalla UI di Actions (pulsante *Review deployments*),
+e la PR mergiare dalla UI. Per rieseguire tutta la storia standard su un repo nuovo:
+`scripts/scenarios.sh` (o `scripts/scenarios.sh 4` per partire dallo scenario 4).
+
 ## Setup del repository
 
 - *Settings → Actions → General*: "Allow GitHub Actions to create and approve pull requests" (serve a `promote.yml`).

@@ -4,6 +4,7 @@
 # Uso: scripts/scenarios.sh [numero-scenario-iniziale]
 set -euo pipefail
 cd "$(dirname "$0")/.."
+export REPO="${REPO:-$(gh repo view --json nameWithOwner --jq .nameWithOwner)}"
 G=scripts/gitops.sh
 START="${1:-1}"
 title() { printf '\n\033[1;33m══════ Scenario %s ══════\033[0m\n' "$*"; }
@@ -57,11 +58,11 @@ if run 6; then
   $G reject-deploy produzione "Fuori dalla finestra di rilascio concordata: rieseguire alle 22:00"
   $G wait-deploy "$sha" || true
   echo "→ main dichiara 1.1.0 ma produzione non è allineata: riallineamento manuale nella finestra" >&2
-  gh workflow run deploy.yml -f environment=produzione
+  gh workflow run -R "$REPO" deploy.yml -f environment=produzione
   sleep 5
   $G approve-deploy produzione "Finestra di rilascio CR-1007 aperta"
-  run_id=$(gh run list --workflow deploy.yml --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId')
-  gh run watch "$run_id" --exit-status >/dev/null && echo "Deploy produzione completato" >&2
+  run_id=$(gh run list -R "$REPO" --workflow deploy.yml --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId')
+  gh run watch -R "$REPO" "$run_id" --exit-status >/dev/null && echo "Deploy produzione completato" >&2
 fi
 
 title "Stato finale"

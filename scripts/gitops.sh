@@ -45,7 +45,7 @@ cmd_promote() {
   local run; run="$(find_run promote.yml ".createdAt >= \"$since\" and (.displayTitle | contains(\"($cr)\"))")"
   log "Run promote: https://github.com/$REPO/actions/runs/$run"
   if ! gh run watch -R "$REPO" "$run" --exit-status >/dev/null 2>&1; then
-    gh run view -R "$REPO" "$run" --log-failed | grep -E '::error::|##\[error\]' | sed 's/.*##\[error\]/  /' >&2 || true
+    gh run view -R "$REPO" "$run" --log-failed | grep '##\[error\]' | sed 's/.*##\[error\]/  /' >&2 || true
     die "Promozione rifiutata dalla pipeline (run $run)"
   fi
   local pr
