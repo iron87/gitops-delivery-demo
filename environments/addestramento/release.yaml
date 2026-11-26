@@ -6,8 +6,8 @@ environment: addestramento
 application: orders-service
 artifact:
   name: orders-service
-  version: 1.1.0
+  version: 1.2.1
   repository: https://nexus.example.local/repository/releases/it/example/orders-service
-change_request: CR-1005
+change_request: CR-1006
 requested_by: ref.bianchi
-requested_at: "2026-11-26T16:38:42Z"
+requested_at: "2026-11-26T16:39:41Z"
