@@ -1,0 +1,11 @@
+# Configurazione applicativa specifica dell'ambiente produzione.
+# Viene passata come extra_vars al job template AWX in fase di deploy.
+server:
+  replicas: 4
+logging:
+  level: WARN
+datasource:
+  url: jdbc:postgresql://db-prod.example.local:5432/orders
+  pool_size: 30
+features:
+  new_checkout: false

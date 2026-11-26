@@ -1,0 +1,13 @@
+# File guida dell'ambiente addestramento.
+# Descrive COSA deve essere installato in questo ambiente. È l'unica fonte di verità:
+# la pipeline "promote" lo modifica aprendo una PR, la pipeline "deploy" lo legge
+# dopo il merge su main ed esegue il rilascio.
+environment: addestramento
+application: orders-service
+artifact:
+  name: orders-service
+  version: 1.0.0
+  repository: https://nexus.example.local/repository/releases/it/example/orders-service
+change_request: CR-1000
+requested_by: bootstrap
+requested_at: "2026-11-26T00:00:00Z"

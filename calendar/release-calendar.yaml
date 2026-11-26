@@ -1,0 +1,12 @@
+# Calendario rilasci: finestre di freeze per ambiente (date incluse, UTC, formato YYYY-MM-DD).
+# Durante un freeze la pipeline "deploy" blocca il rilascio sull'ambiente indicato,
+# anche se la PR è già stata approvata e mergiata.
+freeze:
+  - environment: produzione
+    from: "2026-12-20"
+    to: "2027-01-07"
+    reason: Freeze natalizio
+  - environment: addestramento
+    from: "2026-12-24"
+    to: "2026-12-26"
+    reason: Chiusura aziendale

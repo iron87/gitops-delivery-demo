@@ -1,0 +1,4 @@
+# Parametri di esecuzione AWX per l'ambiente sviluppo.
+job_template: deploy-orders-service-sviluppo
+inventory: inv-sviluppo
+limit: orders_sviluppo

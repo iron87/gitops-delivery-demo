@@ -1,0 +1,11 @@
+# Configurazione applicativa specifica dell'ambiente addestramento.
+# Viene passata come extra_vars al job template AWX in fase di deploy.
+server:
+  replicas: 2
+logging:
+  level: INFO
+datasource:
+  url: jdbc:postgresql://db-addestr.example.local:5432/orders
+  pool_size: 10
+features:
+  new_checkout: true

@@ -1,0 +1,8 @@
+# Team Approvatori per ambiente (step 5 "Approve").
+# In un'organizzazione reale qui ci sarebbero team distinti, es. @org/approvatori-produzione,
+# e la branch protection di main richiederebbe "Require review from Code Owners".
+/environments/sviluppo/       @iron87
+/environments/addestramento/  @iron87
+/environments/produzione/     @iron87
+/calendar/                    @iron87
+/.github/                     @iron87

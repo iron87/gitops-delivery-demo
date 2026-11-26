@@ -1,0 +1,4 @@
+# Parametri di esecuzione AWX per l'ambiente addestramento.
+job_template: deploy-orders-service-addestramento
+inventory: inv-addestramento
+limit: orders_addestramento

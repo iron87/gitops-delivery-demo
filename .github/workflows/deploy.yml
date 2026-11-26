@@ -1,0 +1,185 @@
+# Pipeline di deploy (step 7, 8 e 9 del processo).
+#
+# Si attiva a ogni commit su main che modifica environments/<ambiente>/** (tipicamente il merge
+# di una PR di delivery) e rilascia SOLO gli ambienti modificati. Per ogni ambiente:
+#   - gate calendario: blocca il rilascio se l'ambiente è in freeze (calendar/release-calendar.yaml)
+#   - gate approvazione: il job usa il GitHub Environment omonimo, che per addestramento e
+#     produzione richiede l'approvazione del Team Approvatori prima di partire
+#   - step 8: "carica" file guida + configurazione su AWX e lancia il job template
+#   - step 9: completa il passaggio della CR sull'ambiente
+# AWX e il sistema di change management sono simulati con chiamate a httpbin.org.
+name: deploy
+
+run-name: "deploy ${{ github.event_name == 'workflow_dispatch' && format('manuale {0}', inputs.environment) || github.sha }}"
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "environments/**"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Ambiente da ri-allineare allo stato di main
+        type: choice
+        options: [sviluppo, addestramento, produzione]
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  HTTPBIN: https://httpbin.org
+
+jobs:
+  detect:
+    name: Rileva ambienti modificati
+    runs-on: ubuntu-latest
+    outputs:
+      environments: ${{ steps.detect.outputs.environments }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: detect
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_ENV: ${{ inputs.environment }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          if [[ "$EVENT" == "workflow_dispatch" ]]; then
+            changed="$INPUT_ENV"
+          elif [[ "$BEFORE" =~ ^0+$ ]] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            changed="$(ls environments)"   # primo push: allinea tutto
+          else
+            changed="$(git diff --name-only "$BEFORE" "$AFTER" -- environments | cut -d/ -f2 | sort -u)"
+          fi
+          # ordine di rilascio stabile lungo la catena
+          envs="$(for e in sviluppo addestramento produzione; do grep -qx "$e" <<< "$changed" && echo "$e"; done \
+            | jq -R . | jq -sc .)"
+          echo "Ambienti da rilasciare: $envs"
+          echo "environments=$envs" >> "$GITHUB_OUTPUT"
+
+  calendar-gate:
+    name: Calendario rilasci (${{ matrix.environment }})
+    needs: detect
+    if: needs.detect.outputs.environments != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: ${{ fromJSON(needs.detect.outputs.environments) }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verifica freeze
+        env:
+          ENV_NAME: ${{ matrix.environment }}
+        run: |
+          today="$(date -u +%Y-%m-%d)"
+          freeze="$(yq -o=json calendar/release-calendar.yaml \
+            | jq -c --arg env "$ENV_NAME" --arg today "$today" \
+                '[.freeze[]? | select(.environment == $env and .from <= $today and $today <= .to)] | first // empty')"
+          if [[ -n "$freeze" ]]; then
+            echo "::error::$ENV_NAME in freeze oggi ($today): $(jq -r '"\(.reason) [\(.from) → \(.to)]"' <<< "$freeze")"
+            exit 1
+          fi
+          echo "Nessun freeze attivo su $ENV_NAME in data $today"
+
+  deploy:
+    name: Deploy ${{ matrix.environment }}
+    needs: [detect, calendar-gate]
+    if: needs.detect.outputs.environments != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: ${{ fromJSON(needs.detect.outputs.environments) }}
+    environment:
+      name: ${{ matrix.environment }}
+      url: ${{ steps.awx.outputs.url }}
+    concurrency:
+      group: deploy-${{ matrix.environment }}
+      cancel-in-progress: false
+    env:
+      ENV_NAME: ${{ matrix.environment }}
+      DIR: environments/${{ matrix.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Leggi file guida
+        id: guide
+        run: |
+          yq -o=json "$DIR/release.yaml" > /tmp/release.json
+          {
+            echo "artifact=$(jq -r .artifact.name /tmp/release.json)"
+            echo "version=$(jq -r .artifact.version /tmp/release.json)"
+            echo "cr=$(jq -r .change_request /tmp/release.json)"
+          } >> "$GITHUB_OUTPUT"
+          echo "================ COSA VIENE DEPLOYATO ================"
+          echo "Ambiente   : $ENV_NAME"
+          echo "Artefatto  : $(jq -r '.artifact.name + "@" + .artifact.version' /tmp/release.json)"
+          echo "Sorgente   : $(jq -r .artifact.repository /tmp/release.json)"
+          echo "CR         : $(jq -r .change_request /tmp/release.json)"
+          echo "Richiedente: $(jq -r .requested_by /tmp/release.json)"
+          echo "Commit     : $GITHUB_SHA"
+          echo "--------------- configurazione ambiente --------------"
+          for f in "$DIR"/config/*.yaml; do echo "# $f"; grep -v '^#' "$f"; done
+          echo "======================================================"
+
+      - name: "Step 8: carica file e lancia job AWX (simulato su httpbin)"
+        id: awx
+        run: |
+          job_template="$(yq '.job_template' "$DIR/config/awx.yaml")"
+          payload="$(jq -n \
+            --arg env "$ENV_NAME" \
+            --arg sha "$GITHUB_SHA" \
+            --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --slurpfile release /tmp/release.json \
+            --argjson app "$(yq -o=json "$DIR/config/application.yaml")" \
+            --argjson awx "$(yq -o=json "$DIR/config/awx.yaml")" \
+            '{
+              inventory: $awx.inventory,
+              limit: $awx.limit,
+              extra_vars: {
+                environment: $env,
+                artifact: $release[0].artifact,
+                change_request: $release[0].change_request,
+                app_config: $app,
+                gitops_commit: $sha,
+                triggered_by: $run
+              }
+            }')"
+          url="$HTTPBIN/anything/awx/api/v2/job_templates/$job_template/launch/"
+          echo "POST $url"
+          resp="$(curl -sS --fail --retry 5 --retry-all-errors --retry-delay 3 --max-time 30 \
+            -X POST "$url" -H 'Content-Type: application/json' -d "$payload")"
+          echo "Risposta httpbin (echo della richiesta ricevuta):"
+          jq '{method, url, json}' <<< "$resp"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: "Step 9: completa passaggio CR ad ambiente (simulato su httpbin)"
+        env:
+          CR: ${{ steps.guide.outputs.cr }}
+          ARTIFACT: ${{ steps.guide.outputs.artifact }}
+          VERSION: ${{ steps.guide.outputs.version }}
+        run: |
+          url="$HTTPBIN/anything/itsm/api/change_requests/$CR/transitions"
+          payload="$(jq -n --arg env "$ENV_NAME" --arg a "$ARTIFACT" --arg v "$VERSION" \
+            --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            '{transition: "deployed", environment: $env, artifact: $a, version: $v, evidence: $run}')"
+          echo "POST $url"
+          curl -sS --fail --retry 5 --retry-all-errors --retry-delay 3 --max-time 30 \
+            -X POST "$url" -H 'Content-Type: application/json' -d "$payload" | jq '{method, url, json}'
+
+      - name: Riepilogo
+        env:
+          CR: ${{ steps.guide.outputs.cr }}
+          ARTIFACT: ${{ steps.guide.outputs.artifact }}
+          VERSION: ${{ steps.guide.outputs.version }}
+        run: |
+          {
+            echo "### ✅ $ENV_NAME: $ARTIFACT@$VERSION"
+            echo "- CR: **$CR** → transizione \`deployed\`"
+            echo "- Commit GitOps: \`$GITHUB_SHA\`"
+          } >> "$GITHUB_STEP_SUMMARY"

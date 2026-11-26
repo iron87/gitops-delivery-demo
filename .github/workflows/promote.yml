@@ -1,0 +1,193 @@
+# Pipeline CD "promote" (step 2 e 3 del processo).
+#
+# Invocata via API (workflow_dispatch) dal sistema di change management quando una CR
+# chiede la promozione di un artefatto/versione su un ambiente. La pipeline:
+#   1. valida l'input e la politica di promozione (sviluppo -> addestramento -> produzione)
+#   2. aggiorna il file guida environments/<ambiente>/release.yaml
+#   3. apre la Pull Request "delivery su ambiente X" verso main
+#   4. chiude come "superseded" eventuali PR di promozione precedenti ancora aperte sullo stesso ambiente
+#
+# Esempio di chiamata API:
+#   curl -X POST -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" \
+#     https://api.github.com/repos/<owner>/<repo>/actions/workflows/promote.yml/dispatches \
+#     -d '{"ref":"main","inputs":{"environment":"sviluppo","version":"1.1.0","cr_id":"CR-1001"}}'
+name: promote
+
+run-name: "promote ${{ inputs.artifact }} ${{ inputs.version }} -> ${{ inputs.environment }} (${{ inputs.cr_id }})"
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Ambiente target
+        type: choice
+        options: [sviluppo, addestramento, produzione]
+        required: true
+      version:
+        description: Versione dell'artefatto (semver, es. 1.2.0)
+        type: string
+        required: true
+      cr_id:
+        description: Identificativo della Change Request (es. CR-1234)
+        type: string
+        required: true
+      artifact:
+        description: Nome dell'artefatto
+        type: string
+        default: orders-service
+      requested_by:
+        description: Referente applicativo che ha aperto la CR
+        type: string
+        default: referente-applicativo
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: promote-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  open-delivery-pr:
+    runs-on: ubuntu-latest
+    env:
+      ENV_NAME: ${{ inputs.environment }}
+      VERSION: ${{ inputs.version }}
+      CR: ${{ inputs.cr_id }}
+      ARTIFACT: ${{ inputs.artifact }}
+      REQUESTED_BY: ${{ inputs.requested_by }}
+      GUIDE: environments/${{ inputs.environment }}/release.yaml
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Valida input
+        run: |
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] \
+            || { echo "::error::Versione '$VERSION' non è semver valido"; exit 1; }
+          [[ "$CR" =~ ^CR-[0-9]+$ ]] \
+            || { echo "::error::CR '$CR' non valida (formato atteso CR-<numero>)"; exit 1; }
+          [[ "$ARTIFACT" =~ ^[a-z0-9][a-z0-9-]*$ ]] \
+            || { echo "::error::Nome artefatto '$ARTIFACT' non valido"; exit 1; }
+          [[ "$REQUESTED_BY" =~ ^[A-Za-z0-9._@-]+$ ]] \
+            || { echo "::error::requested_by '$REQUESTED_BY' non valido"; exit 1; }
+
+      - name: Verifica politica di promozione
+        id: policy
+        run: |
+          current="$(yq '.artifact.name + "@" + .artifact.version' "$GUIDE")"
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "Ambiente $ENV_NAME: installato $current, richiesto $ARTIFACT@$VERSION"
+
+          if [[ "$current" == "$ARTIFACT@$VERSION" ]]; then
+            echo "::error::$ARTIFACT@$VERSION è già la versione prevista in $ENV_NAME"
+            exit 1
+          fi
+
+          # Una versione può arrivare in un ambiente solo se è già stata consegnata
+          # (mergiata su main) nell'ambiente precedente della catena.
+          case "$ENV_NAME" in
+            addestramento) previous=sviluppo ;;
+            produzione)    previous=addestramento ;;
+            *)             previous="" ;;
+          esac
+
+          if [[ -n "$previous" ]]; then
+            prev_guide="environments/$previous/release.yaml"
+            history="$(git log origin/main --format=%H -- "$prev_guide" \
+              | while read -r sha; do
+                  git show "$sha:$prev_guide" | yq '.artifact.name + "@" + .artifact.version'
+                done | sort -u)"
+            echo "Versioni consegnate in $previous:"; echo "$history"
+            if ! grep -qxF "$ARTIFACT@$VERSION" <<< "$history"; then
+              echo "::error::Promozione rifiutata: $ARTIFACT@$VERSION non è mai stato consegnato in $previous. Catena: sviluppo -> addestramento -> produzione"
+              exit 1
+            fi
+          fi
+
+      - name: Aggiorna file guida
+        run: |
+          export NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          yq -i '
+            .artifact.name = strenv(ARTIFACT) |
+            .artifact.version = strenv(VERSION) |
+            .change_request = strenv(CR) |
+            .requested_by = strenv(REQUESTED_BY) |
+            .requested_at = strenv(NOW)
+          ' "$GUIDE"
+          git --no-pager diff
+
+      - name: Commit e push del branch di delivery
+        id: branch
+        run: |
+          branch="promote/$ENV_NAME/$ARTIFACT-$VERSION-$CR"
+          echo "name=$branch" >> "$GITHUB_OUTPUT"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add "$GUIDE"
+          git commit -m "$ENV_NAME: $ARTIFACT $VERSION ($CR)"
+          git push --force origin "$branch"
+
+      - name: Apri Pull Request di delivery
+        id: pr
+        env:
+          BRANCH: ${{ steps.branch.outputs.name }}
+          CURRENT: ${{ steps.policy.outputs.current }}
+        run: |
+          gh label create "env:$ENV_NAME" --color 0E8A16 --force >/dev/null
+          gh label create "promotion" --color 1D76DB --force >/dev/null
+
+          title="[$ENV_NAME] $ARTIFACT $VERSION ($CR)"
+          body="$(cat <<EOF
+          ## Delivery su ambiente \`$ENV_NAME\`
+
+          | | |
+          |---|---|
+          | Change Request | **$CR** |
+          | Artefatto | \`$ARTIFACT\` |
+          | Versione attuale | \`$CURRENT\` |
+          | Versione richiesta | \`$ARTIFACT@$VERSION\` |
+          | Richiedente | $REQUESTED_BY |
+          | Pipeline | ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} |
+
+          ### Per il Referente applicativo (step 4, opzionale)
+          Eventuali modifiche di configurazione per questo rilascio vanno committate su questo branch
+          in \`environments/$ENV_NAME/config/\`.
+
+          ### Per il Team Approvatori (step 5)
+          - [ ] CR $CR approvata e nella finestra del calendario rilasci
+          - [ ] Diff del file guida e della configurazione verificato
+
+          Il **merge** di questa PR su \`main\` predispone la delivery (step 6) e avvia la pipeline di deploy (step 7).
+          Chiudere la PR senza merge equivale a rifiutare la delivery.
+          EOF
+          )"
+
+          existing="$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number')"
+          if [[ -n "$existing" ]]; then
+            gh pr edit "$existing" --title "$title" --body "$body"
+            number="$existing"
+          else
+            url="$(gh pr create --base main --head "$BRANCH" --title "$title" --body "$body" \
+              --label "env:$ENV_NAME" --label promotion)"
+            number="${url##*/}"
+          fi
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+
+          # Le PR di promozione precedenti sullo stesso ambiente diventano obsolete.
+          gh pr list --label "env:$ENV_NAME" --label promotion --state open --json number --jq '.[].number' \
+            | while read -r old; do
+                [[ "$old" == "$number" ]] && continue
+                gh pr close "$old" --delete-branch \
+                  --comment "Superseded dalla #$number ($ARTIFACT $VERSION, $CR)."
+              done
+
+          {
+            echo "### Delivery PR aperta: #$number"
+            echo "- Ambiente: \`$ENV_NAME\`"
+            echo "- \`$CURRENT\` → \`$ARTIFACT@$VERSION\` ($CR)"
+          } >> "$GITHUB_STEP_SUMMARY"

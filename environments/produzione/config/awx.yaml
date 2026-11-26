@@ -1,0 +1,4 @@
+# Parametri di esecuzione AWX per l'ambiente produzione.
+job_template: deploy-orders-service-produzione
+inventory: inv-produzione
+limit: orders_produzione
