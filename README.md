@@ -127,7 +127,7 @@ SHA=$(scripts/gitops.sh approve-pr $PR)
 scripts/gitops.sh wait-deploy $SHA                                           # sviluppo: niente gate
 
 PR=$(scripts/gitops.sh promote addestramento 1.3.0 CR-2002 orders-service ref.bianchi)
-scripts/gitops.sh config $PR application.yaml '.logging.level = DEBUG'      # step 4 opzionale
+scripts/gitops.sh config $PR application.yaml '.logging.level = "DEBUG"'    # step 4 opzionale
 SHA=$(scripts/gitops.sh approve-pr $PR)
 scripts/gitops.sh approve-deploy addestramento "CAB ok"                      # gate di ambiente
 scripts/gitops.sh wait-deploy $SHA
